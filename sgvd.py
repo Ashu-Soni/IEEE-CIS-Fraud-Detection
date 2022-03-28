@@ -7,17 +7,6 @@ import time
 import pandas as pd
 
 class svgd_bayesnn:
-    '''        
-        Input
-            -- X_train: training dataset, features
-            -- y_train: training labels
-            -- batch_size: sub-sampling batch size
-            -- max_iter: maximum iterations for the training procedure
-            -- M: number of particles are used to fit the posterior distribution
-            -- n_hidden: number of hidden units
-            -- a0, b0: hyper-parameters of Gamma distribution
-            -- master_stepsize, auto_corr: parameters of adgrad
-    '''
     def __init__(self, X_train, y_train,  batch_size = 100, max_iter = 1000, M = 20, n_hidden = 50, a0 = 1, b0 = 0.1, master_stepsize = 1e-3, auto_corr = 0.9):
         self.n_hidden = n_hidden
         self.d = X_train.shape[1]   # number of data, dimension 
@@ -26,43 +15,37 @@ class svgd_bayesnn:
         num_vars = self.d * n_hidden + n_hidden * 2 + 3  # w1: d*n_hidden; b1: n_hidden; w2 = n_hidden; b2 = 1; 2 variances
         self.theta = np.zeros([self.M, num_vars])  # particles, will be initialized later
         
-        '''
-            We keep the last 10% (maximum 500) of training data points for model developing
-        '''
+        ## 10% of data for model validation purpose(i.e. used after training for the evaluation)
         size_dev = min(int(np.round(0.1 * X_train.shape[0])), 500)
         X_dev, y_dev = X_train[-size_dev:], y_train[-size_dev:]
         X_train, y_train = X_train[:-size_dev], y_train[:-size_dev]
-
-        '''
-            The data sets are normalized so that the input features and the targets have zero mean and unit variance
-        '''
-        self.std_X_train = np.std(X_train, 0)
-        self.std_X_train[ self.std_X_train == 0 ] = 1
-        self.mean_X_train = np.mean(X_train, 0)
-                
+              
         self.mean_y_train = np.mean(y_train)
         self.std_y_train = np.std(y_train)
         
         '''
-            Theano symbolic variables
-            Define the neural network here
+            Defining the neural network here
         '''
-        X = T.matrix('X') # Feature matrix
-        y = T.vector('y') # labels
+        X = T.matrix('X') 
+        y = T.vector('y') 
         
-        w_1 = T.matrix('w_1') # weights between input layer and hidden layer
-        b_1 = T.vector('b_1') # bias vector of hidden layer
-        w_2 = T.vector('w_2') # weights between hidden layer and output layer
-        b_2 = T.scalar('b_2') # bias of output
+        w_1 = T.matrix('w_1') 
+        b_1 = T.vector('b_1') 
+        w_2 = T.vector('w_2') 
+        b_2 = T.scalar('b_2') 
         
-        N = T.scalar('N') # number of observations
+        N = T.scalar('N') 
         
-        log_gamma = T.scalar('log_gamma')   # variances related parameters
+        # variances related parameters
+        log_gamma = T.scalar('log_gamma')   
         log_lambda = T.scalar('log_lambda')
         
         prediction = T.dot(T.nnet.relu(T.dot(X, w_1)+b_1), w_2) + b_2
         
-        ''' define the log posterior distribution '''
+        '''
+            defining the log posterior distribution 
+                - It is the part of driving force of the weight updation part
+        '''
         log_lik_data = -0.5 * X.shape[0] * (T.log(2*np.pi) - log_gamma) - (T.exp(log_gamma)/2) * T.sum(T.power(prediction - y, 2))
         log_prior_data = (a0 - 1) * log_gamma - b0 * T.exp(log_gamma) + log_gamma
         log_prior_w = -0.5 * (num_vars-2) * (T.log(2*np.pi)-log_lambda) - (T.exp(log_lambda)/2)*((w_1**2).sum() + (w_2**2).sum() + (b_1**2).sum() + b_2**2)  \
@@ -84,21 +67,18 @@ class svgd_bayesnn:
         '''
             Training with SVGD
         '''
-        # normalization
-        X_train, y_train = self.normalization(X_train, y_train)
         N0 = X_train.shape[0]  # number of observations
         
         ''' initializing all particles '''
         for i in range(self.M):
             w1, b1, w2, b2, loggamma, loglambda = self.init_weights(a0, b0)
-            # use better initialization for gamma
             ridx = np.random.choice(range(X_train.shape[0]), \
                                            np.min([X_train.shape[0], 1000]), replace = False)
             y_hat = self.nn_predict(X_train[ridx,:], w1, b1, w2, b2)
             loggamma = -np.log(np.mean(np.power(y_hat - y_train[ridx], 2)))
             self.theta[i,:] = self.pack_weights(w1, b1, w2, b2, loggamma, loglambda)
 
-        grad_theta = np.zeros([self.M, num_vars])  # gradient 
+        grad_theta = np.zeros([self.M, num_vars])
         # adagrad with momentum
         fudge_factor = 1e-6
         historical_grad = 0
@@ -125,30 +105,21 @@ class svgd_bayesnn:
         '''
             Model selection by using a development set
         '''
-        X_dev = self.normalization(X_dev) 
         for i in range(self.M):
             w1, b1, w2, b2, loggamma, loglambda = self.unpack_weights(self.theta[i, :])
             pred_y_dev = self.nn_predict(X_dev, w1, b1, w2, b2) * self.std_y_train + self.mean_y_train
+
             # likelihood
             def f_log_lik(loggamma): return np.sum(  np.log(np.sqrt(np.exp(loggamma)) /np.sqrt(2*np.pi) * np.exp( -1 * (np.power(pred_y_dev - y_dev, 2) / 2) * np.exp(loggamma) )) )
+            
             # The higher probability is better    
             lik1 = f_log_lik(loggamma)
+            
             # one heuristic setting
             loggamma = -np.log(np.mean(np.power(pred_y_dev - y_dev, 2)))
             lik2 = f_log_lik(loggamma)
             if lik2 > lik1:
                 self.theta[i,-2] = loggamma  # update loggamma
-
-
-    def normalization(self, X, y = None):
-        X = (X - np.full(X.shape, self.mean_X_train)) / \
-            np.full(X.shape, self.std_X_train)
-            
-        if y is not None:
-            y = (y - self.mean_y_train) / self.std_y_train
-            return (X, y)  
-        else:
-            return X
     
     '''
         Initialize all particles
@@ -209,15 +180,9 @@ class svgd_bayesnn:
 
     
     '''
-        Evaluating testing rmse and log-likelihood, which is the same as in PBP 
-        Input:
-            -- X_test: unnormalized testing feature set
-            -- y_test: unnormalized testing labels
+        Evaluating testing rmse and log-likelihood
     '''
-    def evaluation(self, X_test, y_test):
-        # normalization
-        X_test = self.normalization(X_test)
-        
+    def evaluation(self, X_test, y_test):        
         # average over the output
         pred_y_test = np.zeros([self.M, len(y_test)])
         prob = np.zeros([self.M, len(y_test)])
@@ -242,9 +207,6 @@ class svgd_bayesnn:
         pred_y_test = np.zeros([self.M, len(test)])
         prob = np.zeros([self.M, len(test)])
         
-        '''
-            Since we have M particles, we use a Bayesian view to calculate rmse and log-likelihood
-        '''
         for i in range(self.M):
             w1, b1, w2, b2, loggamma, loglambda = self.unpack_weights(self.theta[i, :])
             pred_y_test[i, :] = self.nn_predict(test, w1, b1, w2, b2) * self.std_y_train + self.mean_y_train
