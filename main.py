@@ -3,7 +3,8 @@ import os
 import numpy as np
 import pandas as pd
 import sklearn.model_selection as model_selection
-from sgvd import svgd_bayesnn
+from svgd import svgd_bayesnn
+from classification import classification
 import time
 import preprocessing
 
@@ -41,6 +42,12 @@ if __name__ == "__main__":
     '''Building the training and testing data set'''
     X_train, X_test, y_train, y_test = model_selection.train_test_split(X_input, y_input, test_size=0.20)
     print(X_train.shape, y_train.shape)
+
+    '''Building, fitting and prediction using Standard Classification Algorithms'''
+    classifiers = classification()
+    classifiers.fit(X_train, y_train)
+    
+    classifiers.predict(X_test, y_test)
         
     ''' Training Bayesian neural network with SVGD '''
     start = time.time()
